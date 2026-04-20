@@ -129,9 +129,74 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 //   - object_write    : save that binary buffer to the store as OBJ_TREE
 //
 // Returns 0 on success, -1 on error.
+// Helper: recursively build tree objects for a subset of index entries
+// all entries share the given prefix (e.g., "src/")
+static int write_tree_level(IndexEntry *entries, int count,
+    const char *prefix, ObjectID *id_out) {
+Tree tree;
+tree.count = 0;
+
+int i = 0;
+while (i < count) {
+// Path relative to current prefix
+const char *rel = entries[i].path + strlen(prefix);
+const char *slash = strchr(rel, '/');
+
+if (!slash) {
+// It's a file directly at this level
+TreeEntry *te = &tree.entries[tree.count++];
+te->mode = entries[i].mode;
+strncpy(te->name, rel, sizeof(te->name) - 1);
+te->name[sizeof(te->name) - 1] = '\0';
+te->hash = entries[i].hash;
+i++;
+} else {
+// It's a subdirectory — collect all entries with same subdir prefix
+size_t dir_name_len = slash - rel;
+char dir_name[256];
+strncpy(dir_name, rel, dir_name_len);
+dir_name[dir_name_len] = '\0';
+
+// Build new prefix for recursion: prefix + dir_name + "/"
+char new_prefix[512];
+snprintf(new_prefix, sizeof(new_prefix), "%s%s/", prefix, dir_name);
+
+// Count how many entries share this subdir
+int j = i;
+while (j < count &&
+strncmp(entries[j].path, new_prefix, strlen(new_prefix)) == 0) {
+j++;
+}
+
+// Recurse into the subdirectory
+ObjectID sub_id;
+if (write_tree_level(entries + i, j - i, new_prefix, &sub_id) != 0)
+return -1;
+
+// Add a DIR entry to this level's tree
+TreeEntry *te = &tree.entries[tree.count++];
+te->mode = MODE_DIR;
+strncpy(te->name, dir_name, sizeof(te->name) - 1);
+te->name[sizeof(te->name) - 1] = '\0';
+te->hash = sub_id;
+
+i = j;
+}
+}
+
+// Serialize and store this tree
+void *data;
+size_t len;
+if (tree_serialize(&tree, &data, &len) != 0) return -1;
+int rc = object_write(OBJ_TREE, data, len, id_out);
+free(data);
+return rc;
+}
+
 int tree_from_index(ObjectID *id_out) {
-    // TODO: Implement recursive tree building
-    // (See Lab Appendix for logical steps)
-    (void)id_out;
-    return -1;
+Index idx;
+if (index_load(&idx) != 0) return -1;
+if (idx.count == 0) return -1;
+
+return write_tree_level(idx.entries, idx.count, "", id_out);
 }
