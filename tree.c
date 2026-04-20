@@ -4,40 +4,24 @@
 // TODO functions:     tree_from_index
 //
 // Binary tree format (per entry, concatenated with no separators):
-//   "<mode-as-ascii-octal> <name>\0<32-byte-binary-hash>"
-//
-// Example single entry (conceptual):
-//   "100644 hello.txt\0" followed by 32 raw bytes of SHA-256
+//   "<mode-as-ascii-octal> <n>\0<32-byte-binary-hash>"
 
 #include "tree.h"
-#include "pes.h"
+#include "index.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
 
+// Forward declaration for object_write (defined in object.c)
+int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
+
 // ─── Mode Constants ─────────────────────────────────────────────────────────
 
 #define MODE_FILE      0100644
 #define MODE_EXEC      0100755
 #define MODE_DIR       0040000
-
-// Forward declarations to avoid linking index.o into test_tree
-typedef struct {
-    uint32_t mode;
-    ObjectID hash;
-    time_t mtime;
-    off_t size;
-    char path[512];
-} IndexEntry;
-
-typedef struct {
-    IndexEntry entries[1024];
-    int count;
-} Index;
-
-int index_load(Index *idx);
 
 // ─── PROVIDED ───────────────────────────────────────────────────────────────
 
@@ -124,7 +108,6 @@ static int write_tree_level(IndexEntry *entries, int count,
         const char *slash = strchr(rel, '/');
 
         if (!slash) {
-            // File at this level
             TreeEntry *te = &tree.entries[tree.count++];
             te->mode = entries[i].mode;
             strncpy(te->name, rel, sizeof(te->name) - 1);
@@ -132,7 +115,6 @@ static int write_tree_level(IndexEntry *entries, int count,
             te->hash = entries[i].hash;
             i++;
         } else {
-            // Subdirectory
             size_t dir_name_len = (size_t)(slash - rel);
             char dir_name[256] = {0};
             strncpy(dir_name, rel, dir_name_len);
@@ -142,9 +124,8 @@ static int write_tree_level(IndexEntry *entries, int count,
 
             int j = i;
             while (j < count &&
-                   strncmp(entries[j].path, new_prefix, strlen(new_prefix)) == 0) {
+                   strncmp(entries[j].path, new_prefix, strlen(new_prefix)) == 0)
                 j++;
-            }
 
             ObjectID sub_id;
             if (write_tree_level(entries + i, j - i, new_prefix, &sub_id) != 0)
@@ -169,6 +150,8 @@ static int write_tree_level(IndexEntry *entries, int count,
 }
 
 int tree_from_index(ObjectID *id_out) {
-    (void)id_out;
-    return -1;
+    Index idx;
+    if (index_load(&idx) != 0) return -1;
+    if (idx.count == 0) return -1;
+    return write_tree_level(idx.entries, idx.count, "", id_out);
 }
